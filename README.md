@@ -60,13 +60,7 @@ Integration regions are defined separately for each compound and acquisition met
 
 ## RMN Pipeline
 
-The initial NMR pipeline focuses on calibration testing using **glucose**.
-
-> **Known limitation:** The `10.dx` dataset remains problematic despite the corresponding spectrum being plotted correctly. Its results should be interpreted with caution.
-
-## V2 RMN Pipeline
-
-The updated pipeline processes **1D NMR spectra in JCAMP-DX format** and supports:
+The pipeline processes **1D NMR spectra in JCAMP-DX format** and supports:
 
 1. Spectral plotting and analysis.
 2. Chemical-shift referencing using **TSP**.
