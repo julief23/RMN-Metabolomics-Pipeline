@@ -1,0 +1,112 @@
+from pathlib import Path
+
+configfile: "config/config.yaml"
+
+DATA_DIR = Path(config["data_dir"])
+RESULTS_DIR = Path(config["results_dir"])
+
+
+MIXTURE_DX = sorted(
+    p for p in DATA_DIR.glob("*.dx")
+    if not p.name.startswith("._")
+)
+
+REFERENCE_DX = sorted(
+    p for p in (DATA_DIR / "metadata").glob("*-Reference/*.dx")
+    if not p.name.startswith("._")
+)
+
+
+MIXTURE_PLOTS = [
+    RESULTS_DIR / "plots_full" / "mixtures" / f"{p.stem}.png"
+    for p in MIXTURE_DX
+]
+
+REFERENCE_PLOTS = [
+    RESULTS_DIR / "plots_full" / "references" / p.parent.name / f"{p.stem}.png"
+    for p in REFERENCE_DX
+]
+
+MIXTURE_TABLES = [
+    RESULTS_DIR / "normalized_csv" / "mixtures" / f"{p.stem}.csv"
+    for p in MIXTURE_DX
+]
+
+REFERENCE_TABLES = [
+    RESULTS_DIR / "normalized_csv" / "references" / p.parent.name / f"{p.stem}.csv"
+    for p in REFERENCE_DX
+]
+
+
+rule all:
+    input:
+        MIXTURE_PLOTS,
+        REFERENCE_PLOTS,
+        MIXTURE_TABLES,
+        REFERENCE_TABLES
+
+
+rule plot_full_mixture_spectrum:
+    input:
+        dx=lambda wildcards: DATA_DIR / f"{wildcards.sample}.dx"
+    output:
+        png=RESULTS_DIR / "plots_full" / "mixtures" / "{sample}.png",
+        csv=RESULTS_DIR / "normalized_csv" / "mixtures" / "{sample}.csv"
+    log:
+        "logs/plot_full_mixtures/{sample}.log"
+    threads: 1
+    conda:
+        "workflow/envs/nmr.yaml"
+    shell:
+        r"""
+        mkdir -p $(dirname {output.png}) $(dirname {output.csv}) $(dirname {log})
+
+        python workflow/scripts/plot_new.py {input.dx} \
+            --ppm \
+            --auto-ref \
+            --ref-guess {config[plotting][ref_guess]} \
+            --ref-window {config[plotting][ref_window]} \
+            --ref-target {config[plotting][ref_target]} \
+            --peak-sign {config[plotting][peak_sign]} \
+            --linewidth {config[plotting][linewidth]} \
+            --full-spectrum \
+            --hide-negative-intensities \
+            --tsp-integral-min {config[plotting][tsp_integral_min]} \
+            --tsp-integral-max {config[plotting][tsp_integral_max]} \
+            --normalized-csv {output.csv} \
+            --output {output.png} \
+            > {log} 2>&1
+        """
+
+
+rule plot_full_reference_spectrum:
+    input:
+        dx=lambda wildcards: DATA_DIR / "metadata" / wildcards.compound_ref / f"{wildcards.sample}.dx"
+    output:
+        png=RESULTS_DIR / "plots_full" / "references" / "{compound_ref}" / "{sample}.png",
+        csv=RESULTS_DIR / "normalized_csv" / "references" / "{compound_ref}" / "{sample}.csv"
+    log:
+        "logs/plot_full_references/{compound_ref}/{sample}.log"
+    threads: 1
+    conda:
+        "workflow/envs/nmr.yaml"
+    shell:
+        r"""
+        mkdir -p $(dirname {output.png}) $(dirname {output.csv}) $(dirname {log})
+
+        python workflow/scripts/plot_new.py {input.dx} \
+            --ppm \
+            --auto-ref \
+            --ref-guess {config[plotting][ref_guess]} \
+            --ref-window {config[plotting][ref_window]} \
+            --ref-target {config[plotting][ref_target]} \
+            --peak-sign {config[plotting][peak_sign]} \
+            --linewidth {config[plotting][linewidth]} \
+            --full-spectrum \
+            --hide-negative-intensities \
+            --tsp-integral-min {config[plotting][tsp_integral_min]} \
+            --tsp-integral-max {config[plotting][tsp_integral_max]} \
+            --normalized-csv {output.csv} \
+            --output {output.png} \
+            > {log} 2>&1
+        """

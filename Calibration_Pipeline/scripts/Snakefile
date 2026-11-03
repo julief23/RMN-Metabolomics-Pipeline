@@ -1,0 +1,323 @@
+from pathlib import Path
+import csv
+
+configfile: "config/config.yaml"
+
+DATA_DIR = Path(config.get("data_dir", "data"))
+RESULTS_DIR = Path(config.get("results_dir", "results"))
+LOGS_DIR = Path(config.get("logs_dir", "logs"))
+EXT = config.get("extension", ".dx")
+
+STANDARD_REGIONS_FILE = Path(
+    config.get("standard_regions_file", "data/metadata/peak_regions_standard.csv")
+)
+PURE_SHIFT_REGIONS_FILE = Path(
+    config.get("pure_shift_regions_file", "data/metadata/peak_regions_pure_shift.csv")
+)
+
+EXCEL_FILE = Path(config.get("excel_file", "data/2_Analytical Chemistry Data.xlsx"))
+CONCENTRATION_KIND = config.get("concentration_kind", "sample_preparation")
+
+REF_GUESS = config.get("ref_guess", -3.0)
+REF_WINDOW = config.get("ref_window", 0.4)
+REF_TARGET = config.get("ref_target", 0.0)
+
+ZERO_INT_MIN = config.get("zero_int_min", -0.1)
+ZERO_INT_MAX = config.get("zero_int_max", 0.1)
+ZERO_X_MIN = config.get("zero_x_min", 0.5)
+ZERO_X_MAX = config.get("zero_x_max", -0.5)
+
+PLOT_MARGIN = config.get("plot_margin", 0.1)
+
+COMPOUND_CODE_MAP = {
+    "Alanine": "Ala",
+    "Arginine": "Arg",
+    "Asparagine": "Asn",
+    "Aspartate": "Asp",
+    "Glucose": "Glc",
+    "Glutamate": "Glu",
+    "Glutamine": "Gln",
+    "Isoleucine": "Ile",
+    "Lactate": "Lac",
+    "Leucine": "Leu",
+    "Methionine": "Met",
+    "Phenylalanine": "Phe",
+    "Tyrosine": "Tyr",
+    "Valine": "Val",
+}
+
+
+def read_regions_table(csv_path):
+    table = {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            compound = row["compound"].strip()
+            table[compound] = {
+                "signal_name": row["signal_name"].strip(),
+                "ppm_min": float(row["ppm_min"]),
+                "ppm_max": float(row["ppm_max"]),
+                "expected_protons": float(row["expected_protons"]),
+            }
+    return table
+
+
+STANDARD_REGIONS = read_regions_table(STANDARD_REGIONS_FILE)
+PURE_SHIFT_REGIONS = read_regions_table(PURE_SHIFT_REGIONS_FILE)
+
+COMPOUNDS = sorted([
+    p.name.replace("-Reference", "")
+    for p in DATA_DIR.glob("*-Reference")
+    if p.is_dir()
+])
+
+compound_samples = {}
+all_final_outputs = []
+
+for compound in COMPOUNDS:
+    input_dir = DATA_DIR / f"{compound}-Reference"
+    samples = sorted([f.stem for f in input_dir.glob(f"*{EXT}") if f.is_file()])
+    compound_samples[compound] = samples
+
+    all_final_outputs.extend([
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_concentrations.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_concentrations_pure_shift.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_concentrations_standard.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_pure_shift_points.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_standard_points.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"calibration_{compound}_pure_shift.png"),
+        str(RESULTS_DIR / "calibration" / compound / f"calibration_{compound}_standard.png"),
+        str(RESULTS_DIR / "calibration" / compound / f"calibration_{compound}_summary.csv"),
+        str(RESULTS_DIR / "calibration" / compound / f"{compound}_with_final_integral.csv"),
+    ])
+
+GLOBAL_STANDARD_PARAMETERS_CSV = RESULTS_DIR / "calibration" / "all_compounds_standard_calibration_parameters.csv"
+GLOBAL_PURE_SHIFT_PARAMETERS_CSV = RESULTS_DIR / "calibration" / "all_compounds_pure_shift_calibration_parameters.csv"
+
+all_final_outputs.append(str(GLOBAL_STANDARD_PARAMETERS_CSV))
+all_final_outputs.append(str(GLOBAL_PURE_SHIFT_PARAMETERS_CSV))
+
+
+def get_spectrum(wc):
+    return str(DATA_DIR / f"{wc.compound}-Reference" / f"{wc.sample}{EXT}")
+
+
+def infer_mode_from_sample(sample):
+    sample_num = int(sample)
+    if sample_num % 10 == 0:
+        return "pure_shift"
+    elif sample_num % 10 == 1:
+        return "standard"
+    else:
+        raise ValueError(
+            f"Sample {sample} does not match expected convention "
+            f"(ending with 0 for Pure Shift or 1 for Standard)."
+        )
+
+
+def get_region_for_sample(compound, sample):
+    mode = infer_mode_from_sample(sample)
+    if mode == "pure_shift":
+        if compound not in PURE_SHIFT_REGIONS:
+            raise ValueError(f"{compound} not found in {PURE_SHIFT_REGIONS_FILE}")
+        return PURE_SHIFT_REGIONS[compound]
+    else:
+        if compound not in STANDARD_REGIONS:
+            raise ValueError(f"{compound} not found in {STANDARD_REGIONS_FILE}")
+        return STANDARD_REGIONS[compound]
+
+
+def get_plot_window(wc):
+    region = get_region_for_sample(wc.compound, wc.sample)
+    ppm_min = region["ppm_min"]
+    ppm_max = region["ppm_max"]
+
+    x_min = max(ppm_min, ppm_max) + PLOT_MARGIN
+    x_max = min(ppm_min, ppm_max) - PLOT_MARGIN
+    return x_min, x_max
+
+
+def get_plot_done_inputs(wc):
+    return [
+        str(RESULTS_DIR / "plots_new" / f"{wc.compound}-Reference" / f"{sample}.png")
+        for sample in compound_samples[wc.compound]
+    ] + [
+        str(RESULTS_DIR / "plots_new" / f"{wc.compound}-Reference" / f"{sample}_0.png")
+        for sample in compound_samples[wc.compound]
+    ]
+
+
+rule all:
+    input:
+        all_final_outputs
+
+
+rule plot_nmr_main:
+    input:
+        spectrum=get_spectrum,
+        standard_regions=str(STANDARD_REGIONS_FILE),
+        pure_shift_regions=str(PURE_SHIFT_REGIONS_FILE)
+    output:
+        plot=str(RESULTS_DIR / "plots_new" / "{compound}-Reference" / "{sample}.png")
+    log:
+        str(LOGS_DIR / "{compound}" / "plot_{sample}.log")
+    conda:
+        "workflow/envs/nmr.yaml"
+    params:
+        script="workflow/scripts/plot_new.py",
+        compound=lambda wc: wc.compound,
+        nmr_mode=lambda wc: infer_mode_from_sample(wc.sample),
+        x_min=lambda wc: get_plot_window(wc)[0],
+        x_max=lambda wc: get_plot_window(wc)[1]
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.plot})" "$(dirname {log})"
+
+        python {params.script} "{input.spectrum}" \
+            --ppm \
+            --auto-ref \
+            --ref-guess {REF_GUESS} \
+            --ref-window {REF_WINDOW} \
+            --ref-target {REF_TARGET} \
+            --integrate \
+            --compound "{params.compound}" \
+            --nmr-mode "{params.nmr_mode}" \
+            --standard-regions-csv "{input.standard_regions}" \
+            --pure-shift-regions-csv "{input.pure_shift_regions}" \
+            --baseline-correct \
+            --baseline-mode edge \
+            --noise-aware-integration \
+            --noise-sigma-multiplier 2.0 \
+            --shade-integral \
+            --x-min {params.x_min} \
+            --x-max {params.x_max} \
+            -o "{output.plot}" \
+            > "{log}" 2>&1
+        """
+
+
+rule plot_nmr_zero:
+    input:
+        spectrum=get_spectrum
+    output:
+        plot=str(RESULTS_DIR / "plots_new" / "{compound}-Reference" / "{sample}_0.png")
+    log:
+        str(LOGS_DIR / "{compound}" / "plot_{sample}_0.log")
+    conda:
+        "workflow/envs/nmr.yaml"
+    params:
+        script="workflow/scripts/plot_new.py"
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.plot})" "$(dirname {log})"
+
+        python {params.script} "{input.spectrum}" \
+            --ppm \
+            --auto-ref \
+            --ref-guess {REF_GUESS} \
+            --ref-window {REF_WINDOW} \
+            --ref-target {REF_TARGET} \
+            --integrate \
+            --int-min {ZERO_INT_MIN} \
+            --int-max {ZERO_INT_MAX} \
+            --baseline-correct \
+            --baseline-mode edge \
+            --noise-aware-integration \
+            --noise-sigma-multiplier 2.0 \
+            --shade-integral \
+            --x-min {ZERO_X_MIN} \
+            --x-max {ZERO_X_MAX} \
+            -o "{output.plot}" \
+            > "{log}" 2>&1
+        """
+
+
+rule plots_done:
+    input:
+        get_plot_done_inputs
+    output:
+        done=str(RESULTS_DIR / "plots_new" / "{compound}-Reference" / ".plots_done")
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.done})"
+        touch "{output.done}"
+        """
+
+
+rule extract_compound_concentrations:
+    input:
+        excel=str(EXCEL_FILE),
+        done=str(RESULTS_DIR / "plots_new" / "{compound}-Reference" / ".plots_done")
+    output:
+        csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_concentrations.csv"),
+        pure_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_concentrations_pure_shift.csv"),
+        standard_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_concentrations_standard.csv"),
+    conda:
+        "workflow/envs/nmr.yaml"
+    params:
+        script="workflow/scripts/extract_compound_concentrations.py",
+        compound_code=lambda wc: COMPOUND_CODE_MAP[wc.compound],
+        logs_dir=lambda wc: str(LOGS_DIR / wc.compound),
+        concentration_kind=CONCENTRATION_KIND,
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.csv})"
+
+        python {params.script} \
+            --compound "{wildcards.compound}" \
+            --compound-code "{params.compound_code}" \
+            --excel "{input.excel}" \
+            --logs-dir "{params.logs_dir}" \
+            --output "{output.csv}" \
+            --concentration-kind "{params.concentration_kind}"
+        """
+
+
+rule plot_compound_calibration:
+    input:
+        csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_concentrations.csv")
+    output:
+        pure_points_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_pure_shift_points.csv"),
+        standard_points_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_standard_points.csv"),
+        pure_png=str(RESULTS_DIR / "calibration" / "{compound}" / "calibration_{compound}_pure_shift.png"),
+        standard_png=str(RESULTS_DIR / "calibration" / "{compound}" / "calibration_{compound}_standard.png"),
+        summary_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "calibration_{compound}_summary.csv"),
+        final_integral_csv=str(RESULTS_DIR / "calibration" / "{compound}" / "{compound}_with_final_integral.csv"),
+    conda:
+        "workflow/envs/nmr.yaml"
+    params:
+        script="workflow/scripts/plot_compound_calibration.py",
+        output_dir=lambda wc: str(RESULTS_DIR / "calibration" / wc.compound),
+    shell:
+        r"""
+        mkdir -p "{params.output_dir}"
+
+        python {params.script} \
+            --compound "{wildcards.compound}" \
+            --input-csv "{input.csv}" \
+            --output-dir "{params.output_dir}"
+        """
+
+
+rule merge_calibration_parameters:
+    input:
+        expand(
+            str(RESULTS_DIR / "calibration" / "{compound}" / "calibration_{compound}_summary.csv"),
+            compound=COMPOUNDS
+        )
+    output:
+        standard_csv=str(GLOBAL_STANDARD_PARAMETERS_CSV),
+        pure_shift_csv=str(GLOBAL_PURE_SHIFT_PARAMETERS_CSV)
+    conda:
+        "workflow/envs/nmr.yaml"
+    params:
+        script="workflow/scripts/merge_calibration_parameters.py"
+    shell:
+        r"""
+        mkdir -p "$(dirname {output.standard_csv})"
+
+        python {params.script} \
+            --input-files {input} \
+            --output-standard "{output.standard_csv}" \
+            --output-pure-shift "{output.pure_shift_csv}"
+        """

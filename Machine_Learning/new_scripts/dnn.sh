@@ -1,0 +1,12 @@
+python dnn.py \
+  -i generated.csv \
+  --loss mse \
+  --epochs 200 \
+  --batch-size 256 \
+  --void-threshold-fraction 0.005 \
+  --model-out dense_nmr_model.keras \
+  --joblib-out dense_nmr_bundle.joblib \
+  --output-prefix dense \
+  --early-stopping \
+  --early-stopping-patience 5 \
+  --exclude-ppm 0.0:0.1
